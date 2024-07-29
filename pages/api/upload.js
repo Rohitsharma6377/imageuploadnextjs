@@ -1,30 +1,18 @@
 // pages/api/upload.js
 
+import AWS from 'aws-sdk';
 import multer from 'multer';
-import path from 'path';
+import { IncomingForm } from 'formidable';
+import { promisify } from 'util';
 import fs from 'fs';
+import path from 'path';
 
-// Define the storage engine using multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    // Define the path where files will be stored
-    const uploadDir = path.join(process.cwd(), 'public/uploads');
-
-    // Ensure the directory exists
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    // Define the filename (preserve original name)
-    cb(null, file.originalname);
-  },
+// Configure AWS S3
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION,
 });
-
-// Create the multer instance with storage options
-const upload = multer({ storage });
 
 export const config = {
   api: {
@@ -32,20 +20,39 @@ export const config = {
   },
 };
 
-// Define the API route handler
-export default function handler(req, res) {
-  // Use multer middleware to handle the file upload
-  upload.single('file')(req, res, (err) => {
+// Use multer to handle file uploads
+const upload = multer({ storage: multer.memoryStorage() });
+
+export default async function handler(req, res) {
+  // Use multer to process the incoming file
+  upload.single('file')(req, res, async (err) => {
     if (err) {
       console.error('Error uploading file:', err);
       return res.status(500).json({ error: 'Something went wrong during file upload.' });
     }
 
-    // File information
+    // Get file from request
     const file = req.file;
-    const filePath = `/uploads/${file.filename}`;
 
-    // Respond with the file URL
-    res.status(200).json({ fileUrl: filePath });
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded.' });
+    }
+
+    // Set up S3 upload parameters
+    const params = {
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: `uploads/${file.originalname}`,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    };
+
+    try {
+      // Upload file to S3
+      const data = await s3.upload(params).promise();
+      res.status(200).json({ fileUrl: data.Location });
+    } catch (uploadErr) {
+      console.error('Error uploading to S3:', uploadErr);
+      res.status(500).json({ error: 'Failed to upload file to S3.' });
+    }
   });
 }
